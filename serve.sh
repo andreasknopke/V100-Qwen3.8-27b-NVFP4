@@ -9,7 +9,7 @@
 #    VISION       1 | 0                     (default 1)
 #    PORT         HTTP port                 (default 8084)
 #    THINKING     1 | 0                     (default 1 = thinking ON, low effort)
-#    CONCURRENCY  parallel requests         (default 3)
+#    CONCURRENCY  parallel requests         (default 1 - see WHY below)
 #
 #  WHY 212992 AND NOT 262144:
 #    NVFP4 weights occupy ~20.0 GiB on the 32 GiB card (attention/GDN/output
@@ -18,6 +18,15 @@
 #    is free after weights -> it refuses to load. 212992 is the measured safe
 #    ceiling. If you want the full 262144 context, use the groupwise-int
 #    artifact instead (16.9 GiB weights), not NVFP4.
+#
+#  WHY CONCURRENCY 1:
+#    Concurrency N reserves N active + N cached device-state slots (2N slots),
+#    whose MINIMUM reservation is a fixed cost independent of --max-context
+#    (decoder state + GDN state image + CUDA-graph allowance). With only ~9.55
+#    GiB of runtime budget left after the 20 GiB weights, 2 slots (~9.0 GiB)
+#    fit but 6 slots (~10.0 GiB) do NOT - the engine aborts startup even at a
+#    reduced context, because the binding constraint is the fixed minimum, not
+#    the per-token KV growth. Lowering the context cannot help.
 #
 #  THINKING: the bundled chat template exposes low/medium/xhigh (NO "minimal"),
 #  and ninfer-serve has no --reasoning-effort flag, so the effort default was
@@ -40,7 +49,11 @@ DRAFT="${3:-4}"
 VISION="${4:-1}"
 PORT="${5:-8084}"
 THINKING="${6:-1}"
-CONCURRENCY="${7:-${CONCURRENCY:-3}}"
+# NVFP4 runs SINGLE-REQUEST by default: its 20.0 GiB weights leave only ~9.55 GiB
+# of runtime budget, and concurrency 3 needs ~10.0 GiB minimum reservation
+# (6 device-state slots) -> the engine refuses to start even at reduced context.
+# Only concurrency 1 fits above ~196k. Override with arg 7 or CONCURRENCY env.
+CONCURRENCY="${7:-${CONCURRENCY:-1}}"
 DEFAULT_MAX_TOKENS="${DEFAULT_MAX_TOKENS:-32768}"
 MAX_PENDING_REQUESTS="${MAX_PENDING_REQUESTS:-16}"
 PENDING_TIMEOUT_MS="${PENDING_TIMEOUT_MS:-600000}"

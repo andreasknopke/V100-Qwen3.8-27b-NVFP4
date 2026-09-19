@@ -149,12 +149,22 @@ and leave an empty completion, which clients report as "no response returned".
 
 ## Concurrency
 
-`--max-concurrency` (default **3**) is how many requests run at once; the rest
-wait in a queue (`--max-pending-requests 16`, admitted within
+`--max-concurrency` (default **1** for NVFP4) is how many requests run at once;
+the rest wait in a queue (`--max-pending-requests 16`, admitted within
 `--pending-timeout-ms 600000` = 10 min before HTTP 503). A single request stays
-at ~66 tok/s regardless of this setting, so raising it costs no latency — it
-only adds parallelism when requests overlap. At NVFP4's 212,992 context, keep it
-at 3; higher values need more device-state + KV memory and a smaller context.
+at ~66 tok/s regardless of this setting, so a higher value costs no latency — it
+only adds parallelism when requests overlap.
+
+**Why 1 and not 3:** concurrency `N` reserves `N` active + `N` cached
+device-state slots (`2N` slots). Their *minimum* reservation is a **fixed** cost
+independent of `--max-context` (decoder state + GDN state image + CUDA-graph
+allowance). With only ~9.55 GiB of runtime budget left after the 20.0 GiB
+weights, 2 slots (~9.0 GiB) fit, but 6 slots (~10.0 GiB) **do not** — the engine
+aborts startup with *"minimum Engine runtime reservation requires …"* **even at
+a reduced context**, because the binding constraint is the fixed minimum, not the
+per-token KV growth. Lowering the context cannot help. If you need parallelism,
+either drop the context substantially or switch to the groupwise-int artifact
+(16.9 GiB weights).
 
 ---
 
