@@ -1,0 +1,22 @@
+# Large model artifacts are downloaded, never committed
+*.ninfer
+*.safetensors
+*.gguf
+*.incomplete
+
+# Build outputs / logs
+build/
+build-v100/
+*.log
+configure.log
+
+# Recorded source patches are generated in the NInfer tree, not committed here
+*.patch
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
