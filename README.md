@@ -62,10 +62,16 @@ defaulted). The id is `qwen3.8-27b` — it must match `/v1/models` exactly.
 | decode | **~66 tok/s** (single request) |
 | prefill | ~1,030–1,260 tok/s steady-state |
 | GPU weights | ~20.0 GiB |
-| max context | **212,992** (see below) |
+| max context | **212,992** (or **262,144** text-only via `serve_262k.sh`) |
 | KV dtype on Volta | int8 only (NVFP4/K8V4 KV unavailable on Volta) |
 | MTP acceptance | ~70–79% (draft window 4, `--lm-head-draft`) |
 | load time | ~15–18 s |
+
+Two launchers are provided:
+
+- `./serve.sh` — the standard NVFP4 server at the safe **212,992** ceiling.
+- `./serve_262k.sh` — the **full 262,144 context** via five memory-fit levers
+  (text-only, single concurrency). See [Full 262,144 context](#full-262144-context-serve_262ksh).
 
 Endpoints verified: `GET /v1/models`, `POST /v1/chat/completions` non-stream and
 SSE stream, with `reasoning_content`, `timings` and `usage`. Function calling
@@ -87,9 +93,89 @@ minimum Engine runtime reservation requires ... 11.18 GiB ... but only
 ```
 
 `212992` is the measured safe ceiling (runtime ~8.9 GiB, free ~1.8 GiB).
-Runtime scales ~40 KiB/token. **If you need the full 262,144 context, use the
-groupwise-int artifact instead** (16.9 GiB weights, ~44 tok/s) — that is a
-different download, not this one.
+Runtime scales ~40 KiB/token.
+
+There are **two** ways to get the full 262,144 context:
+
+- **`./serve_262k.sh`** — keep NVFP4 (fast) and squeeze the full 262,144 in
+  text-only via memory-fit levers. See below.
+- **groupwise-int artifact** — 16.9 GiB weights, ~44 tok/s, a different
+  download. Slower but leaves more VRAM headroom for concurrency.
+
+---
+
+## Full 262,144 context (`serve_262k.sh`)
+
+`./serve_262k.sh` runs NVFP4 at the **full 262,144 context** by applying five
+memory-fit levers that reclaim the ~1.5 GiB the engine would otherwise reserve:
+
+| lever | flag | effect |
+|---|---|---|
+| 1 | `--kv-capacity $CTX` | explicit KV drops the 1 GiB auto headroom |
+| 2 | `--device-state-slots 0` | 1 state slot instead of 2 (prefix reuse still ok) |
+| 3 | `--no-cuda-graph` | drops the CUDA-graph allowance |
+| 4 | `--prefill-chunk 1024` | shrinks the prefill workspace |
+| 5 | `VISION=0` | frees the ~0.3 GiB vision tower (text-only) |
+
+Measured 2026-09-20: runtime **10.6 GiB**, ~190 MiB free, MTP intact.
+
+```bash
+./serve_262k.sh                          # official NVFP4 @ 262144, text-only
+./serve_262k.sh 262144 mtp 4 0 8084 1 cf-nvfp4   # Cold-Fusion NVFP4 @ 262144
+```
+
+Concurrency is forced to **1** (NVFP4's fixed minimum reservation only fits one
+device-state slot at this context). Vision defaults OFF at 262,144; pass
+`VISION=1` and keep `ctx <= 212992` for a comfortable fit.
+
+---
+
+## Cold-Fusion GAIN → NVFP4 (on-the-fly quantization recipe)
+
+[Cold-Fusion GAIN V1.1](https://huggingface.co/DavidAU/Qwen3.8-27B-Cold-Fusion-GAIN-V1.1)
+is a bf16 fine-tune of Qwen3.8-27B (MTP embedded, reduced overthinking). The
+official NVFP4 converter is *closed* — it only repacks a pre-quantized
+compressed-tensors checkpoint. This repo ships a **derivative converter** that
+quantizes the raw bf16 Cold-Fusion checkpoint **on the fly**, weight-only, so
+Cold-Fusion loads exactly like the official NVFP4 artifact (single concurrency,
+text-only) and decodes faster than the groupwise-int build.
+
+**Quantization scheme (weight-only, no calibration needed on Volta):**
+
+- `mlp.(gate|up|down)_proj` layers 0..55 → **NVFP4**: E2M1 codes + E4M3 K16
+  block scale + per-tensor FP32 global divisor. Runtime dequant:
+  `w = e2m1 * e4m3_scale * (1/divisor)`, with `divisor = 2688 / tensor_amax`.
+- attention / GDN projections, `lm_head`, layers 56..63 MLP → **FP8 row-scaled**
+  (E4M3 codes + BF16 row multipliers).
+- norms, GDN small tensors, embedding, draft head, MTP, vision → the same
+  official routes as `convert_nvfp4.py`, materialized straight from bf16.
+- On Volta (`sm_70`) `kNvfp4InternalPolicy` is `A16Only`: the W4A4 activation
+  path (which would need a calibrated `input_scale_divisor`) is never reached,
+  so `*/input_scale_divisor` objects are emitted as a constant `1.0`.
+
+**Steps:**
+
+```bash
+# 1. download the bf16 Cold-Fusion checkpoint (resumable, Xet disabled)
+bash scripts/download_coldfusion.sh
+
+# 2. quantize on the fly -> qwen3_8_27b_coldfusion_nvfp4.ninfer (~21.5 GiB)
+bash scripts/build_coldfusion_nvfp4.sh
+
+# 3. serve at the full 262,144 context (text-only, MTP)
+./serve_262k.sh 262144 mtp 4 0 8084 1 cf-nvfp4
+```
+
+**Measured A/B (2026-09-20, V100, 600-token prompt, `reasoning_effort=none`):**
+
+| | CF-NVFP4 | CF-groupwise-int |
+|---|---|---|
+| decode | **54.2 tok/s** | 43.5 tok/s (+24.7% for NVFP4) |
+| runtime VRAM | 10.6 GiB | 12.9 GiB |
+| quality (4-prompt A/B) | identical correct | identical correct |
+
+The NVFP4 build is larger (21.5 vs 18.2 GB) and leaves almost no VRAM headroom
+at 262,144 (hence `cc=1`), but it is faster and quality is preserved.
 
 ---
 
@@ -192,6 +278,8 @@ Everything installs under `$NINFER_HOME` (default `~/ninfer`):
 ~/ninfer/                 NInfer repo (cloned by build_ninfer.sh)
 ~/ninfer/build-v100/apps/ ninfer, ninfer-serve   (no install target upstream)
 ~/ninfer/models/          qwen3_8_27b_nvfp4.ninfer
+~/ninfer/models/          qwen3_8_27b_coldfusion_nvfp4.ninfer   (optional, CF recipe)
+~/ninfer/models/          Qwen3.8-27B-Cold-Fusion-GAIN-V1.1/    (optional, CF bf16 source)
 ~/ninfer/*.patch          the two recorded source patches
 ```
 
