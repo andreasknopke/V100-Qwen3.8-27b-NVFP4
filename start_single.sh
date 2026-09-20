@@ -56,7 +56,7 @@ fi
 
 echo "=== phase 3: start one instance ==="
 : > "$LOG"
-nohup bash "$HERE/serve.sh" "$CTX" mtp 4 1 "$PORT" "$THINKING" "$CONCURRENCY" > "$LOG" 2>&1 &
+nohup bash "$HERE/serve.sh" "$CTX" mtp 3 1 "$PORT" "$THINKING" "$CONCURRENCY" > "$LOG" 2>&1 &
 
 echo "=== phase 4: wait for readiness ==="
 for i in $(seq 1 80); do

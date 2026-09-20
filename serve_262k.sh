@@ -23,7 +23,7 @@
 #  Usage: ./serve_262k.sh [CTXSIZE] [SPEC] [DRAFT] [VISION] [PORT] [THINKING] [ARTIFACT]
 #    CTXSIZE      logical context ceiling   (default 262144)
 #    SPEC         none | mtp | dflash2      (default mtp)
-#    DRAFT        draft window 1-7 (mtp) / 1-15 (dflash2)   (default 4)
+#    DRAFT        draft window 1-7 (mtp) / 1-15 (dflash2)   (default 3)
 #    VISION       1 | 0                     (default 0 = text-only at 262144)
 #    PORT         HTTP port                 (default 8084)
 #    THINKING     1 | 0                     (default 1 = thinking ON, low effort)
@@ -39,7 +39,7 @@ set -uo pipefail
 
 CTX="${1:-262144}"
 SPEC="${2:-mtp}"
-DRAFT="${3:-4}"
+DRAFT="${3:-3}"
 VISION="${4:-0}"
 PORT="${5:-8084}"
 THINKING="${6:-1}"
